@@ -101,7 +101,17 @@ class QueueProcessor:
             f"⚡ Extracted / Done By :- {self.channel_link}"
         )
 
-        await self.app.bot.send_document(chat, InputFile(final), caption=caption, timeout=20000)
+        async with aiofiles.open(final, "rb") as f:
+    await self.app.bot.send_document(
+        chat_id=chat,
+        document=f,
+        filename=os.path.basename(final),
+        caption=caption,
+        write_timeout=2000,
+        read_timeout=2000,
+        connect_timeout=2000,
+    )
+
 
     async def run(self, cmd):
         proc = await asyncio.create_subprocess_exec(*cmd)
