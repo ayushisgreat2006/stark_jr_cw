@@ -10,7 +10,7 @@ from telegram.ext import (
 from processor import QueueProcessor
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "7941244038"))
+ADMIN_ID = int(os.environ.get("ADMIN_ID", ""))
 
 WORKDIR = Path(os.environ.get("WORKDIR", "/work"))
 WORKDIR.mkdir(parents=True, exist_ok=True)
