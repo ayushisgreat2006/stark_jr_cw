@@ -98,7 +98,9 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     global processor
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     processor = QueueProcessor(
         bot_application=app,
         public_dir=str(PUBLIC_DIR),
@@ -106,7 +108,7 @@ async def main():
         watermark_text=WATERMARK_TEXT,
         channel_link=CHANNEL_LINK
     )
-    # start worker
+
     await processor.start()
 
     app.add_handler(CommandHandler("start", start))
@@ -114,7 +116,6 @@ async def main():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    # run bot (blocking)
     await app.run_polling()
 
 if __name__ == "__main__":
