@@ -44,20 +44,39 @@ class QueueProcessor:
         final = f"{base}.mp4"
 
         # Step 1: Fetch stream
-        cmd1 = [self.ffmpeg, "-loglevel", "error", "-i", m["m3u8"], "-c", "copy", "-bsf:a", "aac_adtstoasc", tmp]
+        cmd1 = [
+            self.ffmpeg, "-loglevel", "error",
+            "-i", m["m3u8"],
+            "-c", "copy",
+            "-bsf:a", "aac_adtstoasc",
+            tmp
+        ]
         await self.run(cmd1)
 
-        # Step 2: Watermark
-        draw = f"drawtext=text='{self.watermark_text}':fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4"
-        cmd2 = [self.ffmpeg, "-i", tmp, "-vf", draw, "-preset", "ultrafast", water]
+        # Step 2: Watermark using filter_complex (safe for all characters)
+        draw = (
+            f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+            f"text='{self.watermark_text}':"
+            f"fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4"
+        )
+
+        cmd2 = [
+            self.ffmpeg, "-y",
+            "-i", tmp,
+            "-filter_complex", draw,
+            "-preset", "ultrafast",
+            water
+        ]
         await self.run(cmd2)
 
         # Step 3: Thumbnail
         if Path(self.thumb_path).exists():
             cmd3 = [
                 self.ffmpeg, "-i", water, "-i", self.thumb_path,
-                "-map", "0", "-map", "1", "-c", "copy",
-                "-disposition:v:1", "attached_pic", final
+                "-map", "0", "-map", "1",
+                "-c", "copy",
+                "-disposition:v:1", "attached_pic",
+                final
             ]
             await self.run(cmd3)
         else:
