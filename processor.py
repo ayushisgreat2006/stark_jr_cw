@@ -1,6 +1,7 @@
 import os
 import uuid
 import asyncio
+import aiofiles
 from pathlib import Path
 from telegram import InputFile
 
@@ -53,7 +54,7 @@ class QueueProcessor:
         ]
         await self.run(cmd1)
 
-                # Step 2: Watermark (SAFE URL TEXT)
+        # Step 2: Watermark (safe text)
         safe_text = (
             self.watermark_text
             .replace(":", "_")
@@ -72,10 +73,10 @@ class QueueProcessor:
             "-i", tmp,
             "-filter_complex", draw,
             "-preset", "ultrafast",
+            "-crf", "28",
             water
         ]
         await self.run(cmd2)
-
 
         # Step 3: Thumbnail
         if Path(self.thumb_path).exists():
@@ -101,17 +102,19 @@ class QueueProcessor:
             f"⚡ Extracted / Done By :- {self.channel_link}"
         )
 
+        # Step 4: Chunked upload (NO TIMEOUT)
         async with aiofiles.open(final, "rb") as f:
-    await self.app.bot.send_document(
-        chat_id=chat,
-        document=f,
-        filename=os.path.basename(final),
-        caption=caption,
-        write_timeout=2000,
-        read_timeout=2000,
-        connect_timeout=2000,
-    )
+            await self.app.bot.send_document(
+                chat_id=chat,
+                document=f,
+                filename=os.path.basename(final),
+                caption=caption,
+                write_timeout=2000,
+                read_timeout=2000,
+                connect_timeout=2000,
+            )
 
+        Path(final).unlink(missing_ok=True)
 
     async def run(self, cmd):
         proc = await asyncio.create_subprocess_exec(*cmd)
