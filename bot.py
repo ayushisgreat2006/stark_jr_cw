@@ -1,100 +1,98 @@
-# bot.py
 import os
 import asyncio
 import logging
 from pathlib import Path
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    ContextTypes, filters
 )
 from processor import QueueProcessor
 
-# ---------- CONFIG from env ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "7941244038"))
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+
 WORKDIR = Path(os.environ.get("WORKDIR", "/work"))
+WORKDIR.mkdir(parents=True, exist_ok=True)
+
+PUBLIC_DIR = WORKDIR / "public"
+PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
+
 THUMB_PATH = os.environ.get("THUMB_PATH", str(WORKDIR / "thumb.jpg"))
 WATERMARK_TEXT = os.environ.get("WATERMARK_TEXT", "Stark JR. 😎🔥 | Extracted / Done By :- https://t.me/tonystark_jr")
 CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "https://t.me/tonystark_jr")
-# --------------------------------------
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-WORKDIR.mkdir(parents=True, exist_ok=True)
-PUBLIC_DIR = WORKDIR / "public"
-PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
-
-# single global processor instance (background worker)
 processor = None
+PENDING_BATCH = {}
 
-def is_admin(user_id: int):
-    return user_id == ADMIN_ID
+def is_admin(uid):
+    return uid == ADMIN_ID
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Stark JR. Batch Bot online. Use /batch <Batch>|<Subject> to start.")
-
-# state per chat for collecting links
-PENDING_BATCH = {}  # chat_id -> {batch,subject,links:list}
+    await update.message.reply_text("Stark JR. Batch Bot Online 😎🔥")
 
 async def batch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.id
-    if not is_admin(user):
-        return await update.message.reply_text("Not allowed.")
-    text = " ".join(context.args)
-    if "|" not in text:
-        return await update.message.reply_text("Usage: /batch BatchName|SubjectName")
-    batch_name, subject_name = [t.strip() for t in text.split("|", 1)]
+    uid = update.effective_user.id
+    if not is_admin(uid):
+        return await update.message.reply_text("Unauthorized")
+
+    if "|" not in " ".join(context.args):
+        return await update.message.reply_text("Usage: /batch BatchName|Subject")
+
+    batch, subject = " ".join(context.args).split("|", 1)
+    batch, subject = batch.strip(), subject.strip()
     chat_id = update.effective_chat.id
-    PENDING_BATCH[chat_id] = {"batch": batch_name, "subject": subject_name, "links": []}
+
+    PENDING_BATCH[chat_id] = {"batch": batch, "subject": subject, "links": []}
+
     await update.message.reply_text(
-        f"Batch set: *{batch_name}* | Subject: *{subject_name}*\nNow paste m3u8 links (one per line). Send `DONE` when finished.",
-        parse_mode="Markdown"
+        f"Batch: {batch}\nSubject: {subject}\n\nPaste all m3u8 links.\nSend DONE when finished."
     )
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.id
-    if not is_admin(user):
-        return
-    chat_id = update.effective_chat.id
-    if chat_id not in PENDING_BATCH:
-        await update.message.reply_text("No batch in progress. Use /batch first.")
+    uid = update.effective_user.id
+    if not is_admin(uid):
         return
 
+    chat_id = update.effective_chat.id
+    if chat_id not in PENDING_BATCH:
+        return await update.message.reply_text("Start with /batch")
+
     text = update.message.text.strip()
+
     if text.upper() == "DONE":
         batch = PENDING_BATCH.pop(chat_id)
-        links = [ln for ln in batch["links"] if ln.strip()]
+        links = batch["links"]
+
         if not links:
-            return await update.message.reply_text("No links provided. Cancelled.")
-        await update.message.reply_text(f"Queued {len(links)} lectures. Processing will start in background. I'll DM progress.")
-        # queue them
-        for idx, link in enumerate(links, start=1):
+            return await update.message.reply_text("No links given.")
+
+        await update.message.reply_text(f"Queued {len(links)} lectures. Processing...")
+
+        for i, link in enumerate(links, 1):
             meta = {
                 "batch": batch["batch"],
                 "subject": batch["subject"],
-                "lecture_no": idx,
+                "lecture_no": i,
                 "total": len(links),
-                "m3u8": link.strip(),
+                "m3u8": link,
                 "requester_chat": chat_id
             }
             await processor.enqueue(meta)
         return
-    # otherwise treat each non-empty line as a link (or a multi-line message)
+
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     PENDING_BATCH[chat_id]["links"].extend(lines)
-    await update.message.reply_text(f"Added {len(lines)} link(s). Total so far: {len(PENDING_BATCH[chat_id]['links'])}")
 
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.id
-    if not is_admin(user):
+    await update.message.reply_text(f"Added {len(lines)} link(s). Total: {len(PENDING_BATCH[chat_id]['links'])}")
+
+async def status_cmd(update, context):
+    if not is_admin(update.effective_user.id):
         return
-    qsz = processor.queue_size()
-    await update.message.reply_text(f"Queue size: {qsz}")
+    await update.message.reply_text(f"Queue: {processor.queue_size()}")
 
 async def main():
     global processor
@@ -119,5 +117,4 @@ async def main():
     await app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
