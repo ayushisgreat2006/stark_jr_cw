@@ -21,7 +21,7 @@ PUBLIC_DIR.mkdir(exist_ok=True)
 THUMB_PATH = os.getenv("THUMB_PATH", "/work/thumb.jpg")
 WATERMARK_TEXT = os.getenv(
     "WATERMARK_TEXT",
-    "Stark JR. 😎🔥 | Extracted / Done By :- https://t.me/tonystark_jr"
+    "Extracted By tonystark_jr"
 )
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/tonystark_jr")
 
