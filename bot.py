@@ -5,7 +5,11 @@ import logging
 from pathlib import Path
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
 )
 from processor import QueueProcessor
 
