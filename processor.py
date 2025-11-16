@@ -53,10 +53,17 @@ class QueueProcessor:
         ]
         await self.run(cmd1)
 
-        # Step 2: Watermark using filter_complex (safe for all characters)
+                # Step 2: Watermark (SAFE URL TEXT)
+        safe_text = (
+            self.watermark_text
+            .replace(":", "_")
+            .replace("/", "_")
+            .replace("-", "_")
+        )
+
         draw = (
             f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-            f"text='{self.watermark_text}':"
+            f"text='{safe_text}':"
             f"fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4"
         )
 
@@ -68,6 +75,7 @@ class QueueProcessor:
             water
         ]
         await self.run(cmd2)
+
 
         # Step 3: Thumbnail
         if Path(self.thumb_path).exists():
