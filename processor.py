@@ -29,39 +29,30 @@ class QueueProcessor:
             try:
                 await self.process(meta)
             except Exception as e:
-                chat = meta["requester_chat"]
-                await self.app.bot.send_message(chat, f"Error: {e}")
+                await self.app.bot.send_message(meta["requester_chat"], f"Error: {e}")
             self.q.task_done()
 
     async def process(self, m):
         chat = m["requester_chat"]
-        lecture_no = m["lecture_no"]
-        total = m["total"]
-
-        await self.app.bot.send_message(chat, f"Processing Lecture {lecture_no}/{total}…")
+        await self.app.bot.send_message(chat, f"Processing Lecture {m['lecture_no']}/{m['total']}…")
 
         uid = uuid.uuid4().hex[:6]
-        base = self.public_dir / f"lec_{lecture_no}_{uid}"
+        base = Path(self.public_dir) / f"lec_{m['lecture_no']}_{uid}"
 
         tmp = f"{base}.tmp.mp4"
         water = f"{base}.water.mp4"
         final = f"{base}.mp4"
 
-        # Step 1: Fetch & convert
-        cmd1 = [
-            self.ffmpeg, "-hide_banner", "-loglevel", "error",
-            "-i", m["m3u8"], "-c", "copy", "-bsf:a", "aac_adtstoasc", tmp
-        ]
+        # Step 1: Fetch stream
+        cmd1 = [self.ffmpeg, "-loglevel", "error", "-i", m["m3u8"], "-c", "copy", "-bsf:a", "aac_adtstoasc", tmp]
         await self.run(cmd1)
 
         # Step 2: Watermark
-        draw = f"drawtext=text='{self.watermark_text}':fontsize=26:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4"
-        cmd2 = [
-            self.ffmpeg, "-i", tmp, "-vf", draw, "-preset", "ultrafast", water
-        ]
+        draw = f"drawtext=text='{self.watermark_text}':fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4"
+        cmd2 = [self.ffmpeg, "-i", tmp, "-vf", draw, "-preset", "ultrafast", water]
         await self.run(cmd2)
 
-        # Step 3: Thumbnail attach
+        # Step 3: Thumbnail
         if Path(self.thumb_path).exists():
             cmd3 = [
                 self.ffmpeg, "-i", water, "-i", self.thumb_path,
@@ -72,7 +63,6 @@ class QueueProcessor:
         else:
             Path(water).rename(final)
 
-        # Cleanup
         Path(tmp).unlink(missing_ok=True)
         Path(water).unlink(missing_ok=True)
 
@@ -80,7 +70,7 @@ class QueueProcessor:
             f"🔥 Stark JR. Batch Engine\n"
             f"🎯 Batch: {m['batch']}\n"
             f"📘 Subject: {m['subject']}\n"
-            f"📚 Lecture {lecture_no}/{total}\n"
+            f"📚 Lecture {m['lecture_no']}/{m['total']}\n"
             f"⚡ Extracted / Done By :- {self.channel_link}"
         )
 
