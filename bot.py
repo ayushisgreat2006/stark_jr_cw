@@ -4,9 +4,13 @@ import logging
 from pathlib import Path
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
 )
+
 from processor import QueueProcessor
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -115,6 +119,7 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     await app.run_polling()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
