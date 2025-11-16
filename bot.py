@@ -23,7 +23,7 @@ WATERMARK_TEXT = os.getenv(
     "WATERMARK_TEXT",
     "Extracted By tonystark_jr"
 )
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/tonystark_jr")
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "tonystark_jr")
 
 processor = None
 PENDING = {}
