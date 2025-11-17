@@ -10,6 +10,7 @@ from typing import Dict, Any
 import aiofiles
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.types import DocumentAttributeVideo  # ✅ NEW: For proper video streaming
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -140,17 +141,18 @@ class QueueProcessor:
                 "-i", meta["m3u8"], "-c", "copy", "-bsf:a", "aac_adtstoasc", str(tmp)
             ])
             
-            # Step 2: Watermark + Telegram-optimized
-            await msg.edit_text(f"🎨 Step 2/3: Watermarking & Optimizing...")
+            # Step 2: Watermark + **Telegram-optimized**
+            await msg.edit_text(f"🎨 Step 2/3: Optimizing for Telegram...")
             async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
                 await f.write(self.watermark_text)
             
             font = self._get_font()
             
-            # **CRITICAL: Build filter chain with yuv420p INSIDE**
+            # **CRITICAL: Build filter chain with yuv420p and proper aspect ratio**
+            # Ensure dimensions are even (H.264 requirement)
             scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2:force_original_aspect_ratio=decrease"
             pad = "pad=ceil(iw/2)*2:ceil(ih/2)*2:(ow-iw)/2:(oh-ih)/2"
-            force_format = "format=yuv420p"  # ✅ THE FIX
+            force_format = "format=yuv420p"  # ✅ THIS IS THE FIX for streaming
             watermark = f"drawtext=fontfile={shlex.quote(font)}:textfile={shlex.quote(str(watermark_txt))}:fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4:boxborderw=2"
             
             full_filter = f"{scale},{pad},{force_format},{watermark}"
@@ -161,14 +163,15 @@ class QueueProcessor:
                 "-filter_complex", full_filter,
                 "-c:v", "libx264",
                 "-preset", "medium",
-                "-crf", "20",
-                "-movflags", "+faststart",
+                "-crf", "20",  # High quality
+                "-movflags", "+faststart",  # Enable instant playback
                 "-c:a", "aac",
                 "-b:a", "192k",
+                "-f", "mp4",  # ✅ Force MP4 container format
                 str(water)
             ])
             
-            # Step 3: Extract thumbnail
+            # Step 3: Extract thumbnail & attach
             await msg.edit_text(f"🖼️ Step 3/3: Adding thumbnail...")
             await self._run_ffmpeg([
                 "ffmpeg", "-y", "-loglevel", "error",
@@ -179,17 +182,18 @@ class QueueProcessor:
                 str(thumbnail_path)
             ])
             
-            # Attach thumbnail
+            # Attach thumbnail to video
             await self._run_ffmpeg([
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", str(water), "-i", str(thumbnail_path),
                 "-map", "0", "-map", "1",
                 "-c", "copy",
+                "-f", "mp4",  # ✅ Force MP4 container again
                 "-disposition:v:1", "attached_pic",
                 str(final)
             ])
-            
-            # Step 4: Upload
+                
+            # Step 4: Upload with **DocumentAttributeVideo** for streaming
             await msg.edit_text(f"📤 Uploading...")
             caption = (
                 f"🔥 Stark JR. Batch Engine\n"
@@ -202,11 +206,46 @@ class QueueProcessor:
             if self.telethon_client:
                 file_size_mb = final.stat().st_size / 1024**2
                 logger.info(f"Uploading {final.name} ({file_size_mb:.1f}MB) via Telethon...")
+                
+                # ✅ **CRITICAL: Get video metadata for proper streaming support**
+                duration = 0
+                width = 1280
+                height = 720
+                
+                try:
+                    # Get video info
+                    probe_cmd = [
+                        "ffprobe", "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=duration,width,height",
+                        "-of", "csv=p=0", str(final)
+                    ]
+                    proc = await asyncio.create_subprocess_exec(*probe_cmd, stdout=asyncio.subprocess.PIPE)
+                    stdout, _ = await proc.communicate()
+                    if proc.returncode == 0:
+                        output = stdout.decode().strip().split(',')
+                        duration = int(float(output[0])) if len(output) > 0 and output[0] else 0
+                        width = int(output[1]) if len(output) > 1 else width
+                        height = int(output[2]) if len(output) > 2 else height
+                except:
+                    pass
+                
+                # ✅ **CRITICAL: Use DocumentAttributeVideo for streaming**
+                attributes = [
+                    DocumentAttributeVideo(
+                        duration=duration,
+                        w=width,
+                        h=height,
+                        supports_streaming=True  # ✅ This enables instant playback!
+                    )
+                ]
+                
                 await self.telethon_client.send_file(
                     chat,
                     str(final),
                     caption=caption,
-                    allow_cache=False
+                    allow_cache=False,
+                    attributes=attributes,  # ✅ Add video metadata
+                    mime_type="video/mp4"   # ✅ Explicit MIME type
                 )
             else:
                 raise Exception("Telethon client not available. Cannot upload.")
