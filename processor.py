@@ -1,12 +1,13 @@
 import os
 import uuid
 import asyncio
-import aiofiles
 import shlex
 import logging
 import shutil
+import traceback
 from pathlib import Path
 from typing import Optional, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +39,9 @@ class QueueProcessor:
         self.ffmpeg = self._find_ffmpeg()
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self._shutdown = False
+        
+        # Create thread pool for blocking operations
+        self.thread_pool = ThreadPoolExecutor(max_workers=max_concurrent * 2)
         
         # Validate paths
         self.public_dir.mkdir(parents=True, exist_ok=True)
@@ -76,6 +80,7 @@ class QueueProcessor:
         logger.info("Shutting down queue processor...")
         self._shutdown = True
         await self.q.join()
+        self.thread_pool.shutdown(wait=True)
         logger.info("Queue processor stopped")
         
     async def enqueue(self, meta: Dict[str, Any]):
@@ -99,7 +104,7 @@ class QueueProcessor:
                 try:
                     await self.process(meta)
                 except Exception as e:
-                    logger.error(f"Processing failed for lecture {meta.get('lecture_no', '?')}: {e}", exc_info=True)
+                    logger.error(f"Processing failed for lecture {meta.get('lecture_no', '?')}: {e}\n{traceback.format_exc()}")
                     try:
                         await self.app.bot.send_message(
                             meta["requester_chat"], 
@@ -110,46 +115,11 @@ class QueueProcessor:
                 finally:
                     self.q.task_done()
                     
-            # Rate limiting
-            await asyncio.sleep(0.5)
-                    
-    def _sanitize_watermark(self, text: str) -> str:
-        """Sanitize text for FFmpeg drawtext filter."""
-        text = text.replace("\n", " ").strip()
-        return shlex.quote(text)
-        
-    def _get_font_path(self) -> str:
-        """Get a valid font path for watermark."""
-        candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "C:\\\\Windows\\\\Fonts\\\\arialbd.ttf"
-        ]
-        for font in candidates:
-            if Path(font).exists():
-                return font
-                
-        logger.warning("No suitable font found, using FFmpeg default")
-        return "sans"
-        
-    async def _cleanup_files(self, *paths: Path):
-        """Safely delete temporary files."""
-        for path in paths:
-            try:
-                if path.exists():
-                    await asyncio.to_thread(path.unlink)
-                    logger.debug(f"Cleaned up {path}")
-            except Exception as e:
-                logger.warning(f"Failed to delete {path}: {e}")
-                
     async def run_ffmpeg(self, cmd: list[str], status_msg: Optional[Any] = None) -> None:
         """
         Run FFmpeg with proper error handling and optional progress updates.
         """
-        logger.info(f"FFmpeg command: {' '.join(cmd[:5])}...")
+        logger.info(f"FFmpeg command: {' '.join(cmd[:8])}...")
         
         proc = await asyncio.create_subprocess_exec(
             *cmd, 
@@ -166,40 +136,46 @@ class QueueProcessor:
             
         logger.info("FFmpeg completed successfully")
         
-    async def _send_progress_updates(self, message, interval=30):
-        """Send periodic progress updates."""
-        try:
-            for i in range(1, 20):
-                await asyncio.sleep(interval)
-                await message.edit_text(
-                    f"{message.text.split('...')[0]}... ({i*interval}s elapsed)"
-                )
-        except Exception:
-            pass
-            
-    async def _validate_url(self, url: str) -> bool:
-        """Basic validation of m3u8 URL."""
-        return bool(url and url.startswith("http") and ".m3u8" in url.lower())
+    async def _cleanup_files(self, *paths: Path):
+        """Safely delete temporary files."""
+        for path in paths:
+            try:
+                if path.exists():
+                    await asyncio.to_thread(path.unlink)
+            except Exception as e:
+                logger.warning(f"Failed to delete {path}: {e}")
+                
+    def _get_font_path(self) -> str:
+        """Get a valid font path for watermark."""
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "C:\\\\Windows\\\\Fonts\\\\arialbd.ttf"
+        ]
+        for font in candidates:
+            if Path(font).exists():
+                return font
+        logger.warning("No suitable font found, using FFmpeg default")
+        return "sans"
+        
+    def _sanitize_filename(self, text: str) -> str:
+        """Sanitize text for use in filename."""
+        return "".join(c for c in text if c.isalnum() or c in (' ', '-', '_')).rstrip()[:50]
         
     async def _check_file_size(self, path: Path):
         """Check if file size is within limits."""
         try:
             size = await asyncio.to_thread(lambda: path.stat().st_size)
             if size > self.max_file_size_bytes:
-                raise Exception(
-                    f"File too large: {size/1024**2:.1f}MB > {self.max_file_size_bytes/1024**3:.1f}GB limit"
-                )
+                raise Exception(f"File too large: {size/1024**2:.1f}MB > {self.max_file_size_bytes/1024**3:.1f}GB limit")
             if size == 0:
                 raise Exception("Output file is empty")
         except Exception as e:
-            if "File too large" in str(e):
-                raise
-            raise Exception(f"Cannot check file size: {e}")
+            raise Exception(f"Size check failed: {e}")
             
-    def _sanitize_filename(self, text: str) -> str:
-        """Sanitize text for use in filename."""
-        return "".join(c for c in text if c.isalnum() or c in (' ', '-', '_')).rstrip()[:50]
-        
     async def process(self, meta: Dict[str, Any]) -> None:
         """Process a single lecture from start to finish."""
         chat = meta["requester_chat"]
@@ -207,7 +183,7 @@ class QueueProcessor:
         total = meta["total"]
         
         # Validate inputs
-        if not await self._validate_url(meta["m3u8"]):
+        if not (meta["m3u8"] and meta["m3u8"].startswith("http") and ".m3u8" in meta["m3u8"].lower()):
             raise ValueError("Invalid m3u8 URL (must be HTTP and contain .m3u8)")
             
         # Check disk space
@@ -223,16 +199,13 @@ class QueueProcessor:
         
         uid = uuid.uuid4().hex[:6]
         base = self.public_dir / f"lec_{lecture_no}_{uid}"
-        
         tmp = base.with_suffix(".tmp.mp4")
         water = base.with_suffix(".water.mp4")
         final = base.with_suffix(".mp4")
-        
-        # Watermark text file (AVOIDS COLON ESCAPING ISSUES!)
         watermark_txt = base.with_suffix(".txt")
         
         try:
-            # Step 1: Fetch stream
+            # Step 1: Download stream
             await status_msg.edit_text(f"📥 Step 1/3: Downloading...")
             cmd1 = [
                 self.ffmpeg, "-loglevel", "error", "-stats",
@@ -244,7 +217,7 @@ class QueueProcessor:
             await self.run_ffmpeg(cmd1)
             await self._check_file_size(tmp)
             
-            # Step 2: Write watermark to file & apply (FIXES COLON ISSUE)
+            # Step 2: Write watermark to file & apply
             await status_msg.edit_text(f"🎨 Step 2/3: Watermarking...")
             async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
                 await f.write(self.watermark_text)
@@ -258,11 +231,9 @@ class QueueProcessor:
             )
             
             cmd2 = [
-                self.ffmpeg, "-y",
-                "-i", str(tmp),
-                "-filter_complex", draw,
-                "-preset", "ultrafast",
-                "-crf", "28",
+                self.ffmpeg, "-y", "-loglevel", "error",
+                "-i", str(tmp), "-filter_complex", draw,
+                "-preset", "ultrafast", "-crf", "28",
                 "-movflags", "+faststart",
                 str(water)
             ]
@@ -273,7 +244,7 @@ class QueueProcessor:
             if self.thumb_path and self.thumb_path.exists():
                 await status_msg.edit_text(f"🖼️ Step 3/3: Adding thumbnail...")
                 cmd3 = [
-                    self.ffmpeg, "-y",
+                    self.ffmpeg, "-y", "-loglevel", "error",
                     "-i", str(water), "-i", str(self.thumb_path),
                     "-map", "0", "-map", "1",
                     "-c", "copy",
@@ -282,12 +253,20 @@ class QueueProcessor:
                 ]
                 await self.run_ffmpeg(cmd3)
             else:
-                logger.warning(f"Thumbnail not found at {self.thumb_path}")
-                await asyncio.to_thread(water.rename, final)
-                
+                logger.warning(f"Thumbnail not found at {self.thumb_path}, copying watermarked file")
+                if water.exists():
+                    await asyncio.to_thread(water.rename, final)
+                else:
+                    raise Exception("Watermark file missing after processing")
+                    
             await self._check_file_size(final)
             
-            # Generate caption
+            # Step 4: Upload (RUN IN THREAD TO AVOID BLOCKING)
+            await status_msg.edit_text(f"📤 Uploading...")
+            safe_batch = self._sanitize_filename(meta['batch'])
+            safe_subject = self._sanitize_filename(meta['subject'])
+            filename = f"{safe_batch}_{safe_subject}_L{lecture_no}.mp4"
+            
             file_size_mb = await asyncio.to_thread(lambda: final.stat().st_size / 1024**2)
             caption = (
                 f"🔥 Stark JR. Batch Engine\n"
@@ -298,29 +277,55 @@ class QueueProcessor:
                 f"⚡ Extracted By: {self.channel_link}"
             )
             
-            # Step 4: Upload (FIXED - Pass path string instead of aiofiles object)
-            await status_msg.edit_text(f"📤 Uploading...")
-            safe_batch = self._sanitize_filename(meta['batch'])
-            safe_subject = self._sanitize_filename(meta['subject'])
-            filename = f"{safe_batch}_{safe_subject}_L{lecture_no}.mp4"
+            # CRITICAL FIX: Run upload in thread pool to prevent blocking
+            logger.info(f"Starting upload of {final.name} ({file_size_mb:.1f}MB)")
+            loop = asyncio.get_event_loop()
             
-            # PASS FILE PATH AS STRING - PTB handles async reading internally
-            await self.app.bot.send_document(
-                chat_id=chat,
-                document=str(final),  # <-- FIX: Use string path, not aiofiles object
-                filename=filename,
-                caption=caption,
-                write_timeout=2000,
-                read_timeout=2000,
-                connect_timeout=2000,
+            await loop.run_in_executor(
+                self.thread_pool,
+                lambda: self._blocking_upload(
+                    chat_id=chat,
+                    file_path=final,
+                    filename=filename,
+                    caption=caption
+                )
             )
             
             await status_msg.edit_text(f"✅ Lecture {lecture_no}/{total} completed!")
             logger.info(f"Successfully processed and uploaded lecture {lecture_no}/{total}")
             
         except Exception as e:
-            logger.error(f"Processing failed: {e}", exc_info=True)
+            logger.error(f"Processing failed: {e}\n{traceback.format_exc()}")
             raise
         finally:
             # Always cleanup
             await self._cleanup_files(tmp, water, final, watermark_txt)
+            
+    def _blocking_upload(self, chat_id: int, file_path: Path, filename: str, caption: str):
+        """
+        Blocking upload wrapper to run in thread pool.
+        This prevents large uploads from blocking the async event loop.
+        """
+        try:
+            # Run the async upload method synchronously in this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Use extremely aggressive timeouts
+            return loop.run_until_complete(
+                self.app.bot.send_document(
+                    chat_id=chat_id,
+                    document=str(file_path),
+                    filename=filename,
+                    caption=caption,
+                    write_timeout=600,  # 10 minutes for upload
+                    read_timeout=600,
+                    connect_timeout=600,
+                    pool_timeout=600,
+                )
+            )
+        except Exception as e:
+            logger.error(f"Upload failed: {e}")
+            raise
+        finally:
+            loop.close()
