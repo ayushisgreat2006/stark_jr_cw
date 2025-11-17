@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 from processor import QueueProcessor
 
-# CRITICAL: Load BOT_TOKEN from environment
+# CRITICAL: Load BOT_TOKEN
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 ADMIN_ENV = os.getenv("ADMIN_ID", "").strip()
@@ -22,10 +22,7 @@ PUBLIC_DIR = WORKDIR / "public"
 PUBLIC_DIR.mkdir(exist_ok=True)
 
 THUMB_PATH = os.getenv("THUMB_PATH", "/work/thumb.jpg")
-WATERMARK_TEXT = os.getenv(
-    "WATERMARK_TEXT",
-    "Extracted By tonystark_jr"
-)
+WATERMARK_TEXT = os.getenv("WATERMARK_TEXT", "Extracted By tonystark_jr")
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "tonystark_jr")
 
 processor = None
@@ -101,12 +98,12 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(background_worker).build()
 
-    # Load Telegram API credentials from environment
+    # Load Telegram API credentials
     SESSION_STRING = os.getenv("SESSION_STRING", "")
     API_ID = int(os.getenv("API_ID", "0"))
     API_HASH = os.getenv("API_HASH", "")
     
-    # Add Railway resource limits
+    # Railway resource limits from env vars
     max_concurrent = int(os.getenv("MAX_CONCURRENT", "1"))
     max_file_size_gb = float(os.getenv("MAX_FILE_SIZE_GB", "1.5"))
 
@@ -119,8 +116,8 @@ def main():
         session_string=SESSION_STRING,
         api_id=API_ID,
         api_hash=API_HASH,
-        max_concurrent=max_concurrent,
-        max_file_size_gb=max_file_size_gb,
+        max_concurrent=max_concurrent,      # This parameter must exist in __init__
+        max_file_size_gb=max_file_size_gb,  # This parameter must exist in __init__
     )
 
     app.add_handler(CommandHandler("start", start))
