@@ -93,20 +93,26 @@ async def background_worker(app):
     """Run processor forever in background."""
     asyncio.create_task(processor.start())
 
+# In bot.py, inside the main() function:
+
 def main():
     global processor
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(background_worker).build()
 
+    # REPLACE THIS SECTION:
     processor = QueueProcessor(
-    bot_application=app,
-    public_dir=str(PUBLIC_DIR),
-    thumb_path=THUMB_PATH,
-    watermark_text=WATERMARK_TEXT,
-    channel_link=CHANNEL_LINK,
-    max_concurrent=2,  # Add this!
-)
+        bot_application=app,
+        public_dir=str(PUBLIC_DIR),
+        thumb_path=THUMB_PATH,
+        watermark_text=WATERMARK_TEXT,
+        channel_link=CHANNEL_LINK,
+        # ADD THESE TWO LINES FOR RAILWAY:
+        max_concurrent=1,      # Process only 1 video at a time (prevents memory overload)
+        max_file_size_gb=1.5,  # Limit file size to 1.5GB (adjust based on your Railway plan)
+    )
 
+    # Rest of your handlers...
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("batch", batch))
     app.add_handler(CommandHandler("status", status))
