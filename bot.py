@@ -99,12 +99,13 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(background_worker).build()
 
     processor = QueueProcessor(
-        bot_application=app,
-        public_dir=str(PUBLIC_DIR),
-        thumb_path=THUMB_PATH,
-        watermark_text=WATERMARK_TEXT,
-        channel_link=CHANNEL_LINK,
-    )
+    bot_application=app,
+    public_dir=str(PUBLIC_DIR),
+    thumb_path=THUMB_PATH,
+    watermark_text=WATERMARK_TEXT,
+    channel_link=CHANNEL_LINK,
+    max_concurrent=2,  # Add this!
+)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("batch", batch))
