@@ -130,58 +130,58 @@ class QueueProcessor:
         base = self.public_dir / f"lec_{no}_{uuid.uuid4().hex[:6]}"
         tmp, water, final = base.with_suffix(".tmp.mp4"), base.with_suffix(".water.mp4"), base.with_suffix(".mp4")
         watermark_txt = base.with_suffix(".txt")
-        thumbnail_jpg = base.with_suffix(".thumb.jpg")
         
         try:
-            # Step 1: Download
+            # Step 1: Download (fast, no re-encoding)
             await msg.edit_text(f"📥 Step 1/3: Downloading...")
             await self._run_ffmpeg([
                 "ffmpeg", "-loglevel", "error", "-stats",
                 "-i", meta["m3u8"], "-c", "copy", "-bsf:a", "aac_adtstoasc", str(tmp)
             ])
             
-            # Step 2: Watermark + **Telegram-optimized encoding**
-            await msg.edit_text(f"🎨 Step 2/3: Watermarking...")
+            # Step 2: Watermark + **CRITICAL TELEGRAM FIXES**
+            await msg.edit_text(f"🎨 Step 2/3: Optimizing for Telegram...")
             async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
                 await f.write(self.watermark_text)
             
             font = self._get_font()
             draw = f"drawtext=fontfile={shlex.quote(font)}:textfile={shlex.quote(str(watermark_txt))}:fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4:boxborderw=2"
             
-            # **CRITICAL: Force Telegram-compatible codec settings**
+            # **HIGH-QUALITY TELEGRAM-STREAMABLE SETTINGS:**
             await self._run_ffmpeg([
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", str(tmp), "-filter_complex", draw,
-                # **TELEGRAM-OPTIMIZED SETTINGS:**
-                "-c:v", "libx264",          # H.264 codec (most compatible)
-                "-profile:v", "baseline",    # Baseline profile for max compatibility
-                "-level", "3.0",             # Level 3.0 for broad device support
-                "-pix_fmt", "yuv420p",       # yuv420p pixel format (required for Telegram streaming)
-                "-preset", "fast",           # Balance speed and quality
-                "-crf", "23",                # Good quality (lower = better, larger file)
-                "-movflags", "+faststart",   # Move moov atom to start for streaming
+                # **DO NOT CHANGE THESE - THEY ARE REQUIRED FOR TELEGRAM STREAMING:**
+                "-c:v", "libx264",           # H.264 codec
+                "-pix_fmt", "yuv420p",       # ✅ CRITICAL: Telegram only streams yuv420p
+                "-profile:v", "main",        # Use 'main' profile (good quality + compatibility)
+                "-level", "4.0",             # Level 4.0 supports 1080p
+                "-preset", "medium",         # Better quality than 'fast'
+                "-crf", "20",                # High quality (18=visually lossless, 23=default)
+                "-movflags", "+faststart",   # Move metadata to start for instant playback
                 "-c:a", "aac",               # AAC audio
-                "-b:a", "128k",              # 128kbps audio
+                "-b:a", "192k",              # Good audio bitrate
                 str(water)
             ])
             
-            # Step 3: **Generate video thumbnail** (not just attach random image)
+            # Step 3: Extract thumbnail from video itself
             await msg.edit_text(f"🖼️ Step 3/3: Adding thumbnail...")
             
-            # Extract thumbnail from video at 5-second mark
+            # Extract a frame at 5 seconds for thumbnail
+            thumbnail_path = base.with_suffix(".thumb.jpg")
             await self._run_ffmpeg([
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", str(water),
                 "-ss", "5",  # Take frame at 5 seconds
                 "-vframes", "1",
                 "-vf", "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2",
-                str(thumbnail_jpg)
+                str(thumbnail_path)
             ])
             
-            # Attach the extracted thumbnail to video
+            # Attach extracted thumbnail to video
             await self._run_ffmpeg([
                 "ffmpeg", "-y", "-loglevel", "error",
-                "-i", str(water), "-i", str(thumbnail_jpg),
+                "-i", str(water), "-i", str(thumbnail_path),
                 "-map", "0", "-map", "1",
                 "-c", "copy",
                 "-disposition:v:1", "attached_pic",
@@ -199,7 +199,7 @@ class QueueProcessor:
             )
             
             if self.telethon_client:
-                logger.info(f"Uploading {final.name} via Telethon...")
+                logger.info(f"Uploading {final.name} ({final.stat().st_size/1024**2:.1f}MB) via Telethon...")
                 await self.telethon_client.send_file(
                     chat,
                     str(final),
@@ -213,6 +213,6 @@ class QueueProcessor:
             
         finally:
             # Cleanup
-            for p in [tmp, water, final, watermark_txt, thumbnail_jpg]:
+            for p in [tmp, water, final, watermark_txt]:
                 if p.exists():
                     p.unlink()
