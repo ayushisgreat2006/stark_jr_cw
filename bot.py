@@ -8,7 +8,6 @@ from telegram.ext import (
 )
 from processor import QueueProcessor
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ENV = os.getenv("ADMIN_ID", "").strip()
 ADMIN_ID = int(ADMIN_ENV) if ADMIN_ENV else None
 
@@ -95,29 +94,32 @@ async def background_worker(app):
 
 # In bot.py, inside the main() function:
 
+# bot.py (in main function)
+
 def main():
     global processor
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(background_worker).build()
 
-    # REPLACE THIS SECTION:
+    # Add these environment variables
+    SESSION_STRING = os.getenv("SESSION_STRING", "")
+    API_ID = int(os.getenv("API_ID", "0"))
+    API_HASH = os.getenv("API_HASH", "")
+
     processor = QueueProcessor(
         bot_application=app,
         public_dir=str(PUBLIC_DIR),
         thumb_path=THUMB_PATH,
         watermark_text=WATERMARK_TEXT,
         channel_link=CHANNEL_LINK,
-        # ADD THESE TWO LINES FOR RAILWAY:
-        max_concurrent=1,      # Process only 1 video at a time (prevents memory overload)
-        max_file_size_gb=1.5,  # Limit file size to 1.5GB (adjust based on your Railway plan)
+        session_string=SESSION_STRING,
+        api_id=API_ID,
+        api_hash=API_HASH,
+        max_concurrent=1,      # Critical for Railway
+        max_file_size_gb=1.5,  # Adjust based on your plan
     )
 
-    # Rest of your handlers...
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("batch", batch))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
-
+    # ... rest of your handlers
     app.run_polling()
 
 if __name__ == "__main__":
