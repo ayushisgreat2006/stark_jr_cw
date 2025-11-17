@@ -26,6 +26,8 @@ class QueueProcessor:
         session_string: str,
         api_id: int,
         api_hash: str,
+        max_concurrent: int = 1,      # ADD THIS
+        max_file_size_gb: float = 1.5, # ADD THIS
     ):
         self.app = bot_application
         self.public_dir = Path(public_dir)
@@ -35,30 +37,49 @@ class QueueProcessor:
         self.session_string = session_string
         self.api_id = api_id
         self.api_hash = api_hash
+        self.max_concurrent = max_concurrent
+        self.max_file_size_bytes = int(max_file_size_gb * 1024**3)
         
         self.q = asyncio.Queue()
         self.telethon_client = None
         
+        # Validate paths
+        self.public_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Initialized with max_concurrent={max_concurrent}, max_file_size={max_file_size_gb}GB")
+                
     async def start(self):
         """Start the background worker."""
         logger.info("Starting queue processor...")
         
         # Initialize Telethon
-        if self.session_string and self.api_id and self.api_hash:
-            logger.info("Connecting Telethon...")
-            self.telethon_client = TelegramClient(
-                StringSession(self.session_string),
-                self.api_id,
-                self.api_hash
-            )
-            await self.telethon_client.connect()
-            if not await self.telethon_client.is_user_authorized():
-                logger.error("❌ Telethon session invalid! Check your SESSION_STRING, API_ID, API_HASH")
+        has_creds = bool(self.session_string and self.api_id and self.api_hash)
+        logger.info(f"Telethon credentials: {has_creds}")
+        
+        if has_creds:
+            try:
+                self.telethon_client = TelegramClient(
+                    StringSession(self.session_string),
+                    self.api_id,
+                    self.api_hash,
+                    sequential_updates=True
+                )
+                await self.telethon_client.connect()
+                
+                is_authorized = await self.telethon_client.is_user_authorized()
+                logger.info(f"Telethon authorized: {is_authorized}")
+                
+                if not is_authorized:
+                    logger.error("❌ Telethon session NOT authorized!")
+                    self.telethon_client = None
+                else:
+                    logger.info("✅ Telethon authorized!")
+                    
+            except Exception as e:
+                logger.error(f"Telethon init failed: {e}")
                 self.telethon_client = None
-            else:
-                logger.info("✅ Telethon connected!")
         else:
-            logger.warning("⚠️ No Telethon session. Bot uploads will fail for large files.")
+            logger.warning("⚠️ No Telethon credentials")
             
         asyncio.create_task(self.worker())
         
@@ -129,7 +150,7 @@ class QueueProcessor:
                 await f.write(self.watermark_text)
             
             font = self._get_font()
-            draw = f"drawtext=fontfile={shlex.quote(font)}:textfile={shlex.quote(str(watermark_txt))}:fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4:boxborderw2"
+            draw = f"drawtext=fontfile={shlex.quote(font)}:textfile={shlex.quote(str(watermark_txt))}:fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4:boxborderw=2"
             await self._run_ffmpeg([
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", str(tmp), "-filter_complex", draw,
@@ -150,6 +171,13 @@ class QueueProcessor:
                 
             # Step 4: Upload via Telethon
             await msg.edit_text(f"📤 Uploading...")
+            
+            # DIAGNOSTIC: Log Telethon status
+            logger.info(f"DEBUG: telethon_client = {self.telethon_client}")
+            logger.info(f"DEBUG: session_string length = {len(self.session_string)}")
+            logger.info(f"DEBUG: api_id = {self.api_id}")
+            logger.info(f"DEBUG: api_hash present = {bool(self.api_hash)}")
+            
             caption = (
                 f"🔥 Stark JR. Batch Engine\n"
                 f"🎯 Batch: {meta['batch']}\n"
@@ -167,8 +195,12 @@ class QueueProcessor:
                     allow_cache=False
                 )
             else:
-                logger.error("No Telethon client! Upload cannot proceed.")
-                raise Exception("Telethon session not configured. Cannot upload large files.")
+                # This should NEVER happen if credentials are correct
+                logger.error("❌ CRITICAL: telethon_client is None at upload time!")
+                logger.error(f"Session string length: {len(self.session_string)}")
+                logger.error(f"API_ID: {self.api_id}")
+                logger.error(f"API_HASH present: {bool(self.api_hash)}")
+                raise Exception("Telethon client is None. Check initialization logs above.")
             
             await msg.edit_text(f"✅ L{no}/{total} completed!")
             
