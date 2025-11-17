@@ -122,7 +122,7 @@ class QueueProcessor:
             
     async def process(self, meta: Dict[str, Any]) -> None:
         chat = meta["requester_chat"]
-        no, total = meta["lecture_no"], meta["total"]
+        no, total = meta['lecture_no'], meta['total']
         
         msg = await self.app.bot.send_message(chat, f"📥 L{no}/{total} starting...")
         
@@ -130,62 +130,56 @@ class QueueProcessor:
         base = self.public_dir / f"lec_{no}_{uuid.uuid4().hex[:6]}"
         tmp, water, final = base.with_suffix(".tmp.mp4"), base.with_suffix(".water.mp4"), base.with_suffix(".mp4")
         watermark_txt = base.with_suffix(".txt")
+        thumbnail_path = base.with_suffix(".thumb.jpg")
         
         try:
-            # Step 1: Download (fast, no re-encoding)
+            # Step 1: Download
             await msg.edit_text(f"📥 Step 1/3: Downloading...")
             await self._run_ffmpeg([
                 "ffmpeg", "-loglevel", "error", "-stats",
                 "-i", meta["m3u8"], "-c", "copy", "-bsf:a", "aac_adtstoasc", str(tmp)
             ])
             
-            # In processor.py, replace the FFmpeg watermark command:
-
-# Step 2: Watermark + **CRITICAL: Force yuv420p IN FILTER CHAIN**
-await msg.edit_text(f"🎨 Step 2/3: Watermarking...")
-async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
-    await f.write(self.watermark_text)
-
-font = self._get_font()
-
-# **THE MAGIC: format=yuv420p MUST be in the filter, not after**
-# Also scale to reasonable resolution to prevent iPad zoom
-scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2:force_original_aspect_ratio=decrease"
-pad = "pad=ceil(iw/2)*2:ceil(ih/2)*2:(ow-iw)/2:(oh-ih)/2"
-force_format = "format=yuv420p"  # ✅ THIS IS THE FIX
-watermark = f"drawtext=fontfile={shlex.quote(font)}:textfile={shlex.quote(str(watermark_txt))}:fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4:boxborderw=2"
-
-# Combine filters: scale → pad → force format → watermark
-full_filter = f"{scale},{pad},{force_format},{watermark}"
-
-await self._run_ffmpeg([
-    "ffmpeg", "-y", "-loglevel", "error",
-    "-i", str(tmp),
-    "-filter_complex", full_filter,
-    "-c:v", "libx264",
-    "-preset", "medium",
-    "-crf", "20",
-    "-movflags", "+faststart",
-    "-c:a", "aac",
-    "-b:a", "192k",
-    str(water)
-])
+            # Step 2: Watermark + Telegram-optimized
+            await msg.edit_text(f"🎨 Step 2/3: Watermarking & Optimizing...")
+            async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
+                await f.write(self.watermark_text)
             
-            # Step 3: Extract thumbnail from video itself
+            font = self._get_font()
+            
+            # **CRITICAL: Build filter chain with yuv420p INSIDE**
+            scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2:force_original_aspect_ratio=decrease"
+            pad = "pad=ceil(iw/2)*2:ceil(ih/2)*2:(ow-iw)/2:(oh-ih)/2"
+            force_format = "format=yuv420p"  # ✅ THE FIX
+            watermark = f"drawtext=fontfile={shlex.quote(font)}:textfile={shlex.quote(str(watermark_txt))}:fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4:boxborderw=2"
+            
+            full_filter = f"{scale},{pad},{force_format},{watermark}"
+            
+            await self._run_ffmpeg([
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", str(tmp),
+                "-filter_complex", full_filter,
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", "20",
+                "-movflags", "+faststart",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                str(water)
+            ])
+            
+            # Step 3: Extract thumbnail
             await msg.edit_text(f"🖼️ Step 3/3: Adding thumbnail...")
-            
-            # Extract a frame at 5 seconds for thumbnail
-            thumbnail_path = base.with_suffix(".thumb.jpg")
             await self._run_ffmpeg([
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", str(water),
-                "-ss", "5",  # Take frame at 5 seconds
+                "-ss", "5",
                 "-vframes", "1",
                 "-vf", "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2",
                 str(thumbnail_path)
             ])
             
-            # Attach extracted thumbnail to video
+            # Attach thumbnail
             await self._run_ffmpeg([
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", str(water), "-i", str(thumbnail_path),
@@ -194,8 +188,8 @@ await self._run_ffmpeg([
                 "-disposition:v:1", "attached_pic",
                 str(final)
             ])
-                
-            # Step 4: Upload via Telethon
+            
+            # Step 4: Upload
             await msg.edit_text(f"📤 Uploading...")
             caption = (
                 f"🔥 Stark JR. Batch Engine\n"
@@ -206,7 +200,8 @@ await self._run_ffmpeg([
             )
             
             if self.telethon_client:
-                logger.info(f"Uploading {final.name} ({final.stat().st_size/1024**2:.1f}MB) via Telethon...")
+                file_size_mb = final.stat().st_size / 1024**2
+                logger.info(f"Uploading {final.name} ({file_size_mb:.1f}MB) via Telethon...")
                 await self.telethon_client.send_file(
                     chat,
                     str(final),
@@ -220,6 +215,6 @@ await self._run_ffmpeg([
             
         finally:
             # Cleanup
-            for p in [tmp, water, final, watermark_txt]:
+            for p in [tmp, water, final, watermark_txt, thumbnail_path]:
                 if p.exists():
                     p.unlink()
