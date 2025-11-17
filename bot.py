@@ -8,9 +8,13 @@ from telegram.ext import (
 )
 from processor import QueueProcessor
 
+# CRITICAL: Load BOT_TOKEN from environment
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
 ADMIN_ENV = os.getenv("ADMIN_ID", "").strip()
 ADMIN_ID = int(ADMIN_ENV) if ADMIN_ENV else None
 
+# Railway-specific paths
 WORKDIR = Path("/work")
 WORKDIR.mkdir(exist_ok=True)
 
@@ -86,25 +90,25 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Queue size: {processor.queue_size()}")
 
 # ---------------------------
-# MAIN PTB21-CORRECT LAUNCH
+# BACKGROUND WORKER
 # ---------------------------
 async def background_worker(app):
     """Run processor forever in background."""
     asyncio.create_task(processor.start())
-
-# In bot.py, inside the main() function:
-
-# bot.py (in main function)
 
 def main():
     global processor
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(background_worker).build()
 
-    # Add these environment variables
+    # Load Telegram API credentials from environment
     SESSION_STRING = os.getenv("SESSION_STRING", "")
     API_ID = int(os.getenv("API_ID", "0"))
     API_HASH = os.getenv("API_HASH", "")
+    
+    # Add Railway resource limits
+    max_concurrent = int(os.getenv("MAX_CONCURRENT", "1"))
+    max_file_size_gb = float(os.getenv("MAX_FILE_SIZE_GB", "1.5"))
 
     processor = QueueProcessor(
         bot_application=app,
@@ -115,11 +119,15 @@ def main():
         session_string=SESSION_STRING,
         api_id=API_ID,
         api_hash=API_HASH,
-        max_concurrent=1,      # Critical for Railway
-        max_file_size_gb=1.5,  # Adjust based on your plan
+        max_concurrent=max_concurrent,
+        max_file_size_gb=max_file_size_gb,
     )
 
-    # ... rest of your handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("batch", batch))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
+
     app.run_polling()
 
 if __name__ == "__main__":
