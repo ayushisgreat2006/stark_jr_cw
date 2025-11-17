@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
+# CRITICAL: Must import aiofiles
+import aiofiles
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -142,6 +145,7 @@ class QueueProcessor:
             try:
                 if path.exists():
                     await asyncio.to_thread(path.unlink)
+                    logger.debug(f"Cleaned up {path}")
             except Exception as e:
                 logger.warning(f"Failed to delete {path}: {e}")
                 
@@ -158,6 +162,7 @@ class QueueProcessor:
         for font in candidates:
             if Path(font).exists():
                 return font
+                
         logger.warning("No suitable font found, using FFmpeg default")
         return "sans"
         
@@ -217,7 +222,7 @@ class QueueProcessor:
             await self.run_ffmpeg(cmd1)
             await self._check_file_size(tmp)
             
-            # Step 2: Write watermark to file & apply
+            # Step 2: Write watermark to file & apply (FIXED: aiofiles is imported)
             await status_msg.edit_text(f"🎨 Step 2/3: Watermarking...")
             async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
                 await f.write(self.watermark_text)
