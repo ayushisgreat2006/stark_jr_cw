@@ -139,30 +139,37 @@ class QueueProcessor:
                 "-i", meta["m3u8"], "-c", "copy", "-bsf:a", "aac_adtstoasc", str(tmp)
             ])
             
-            # Step 2: Watermark + **CRITICAL TELEGRAM FIXES**
-            await msg.edit_text(f"🎨 Step 2/3: Optimizing for Telegram...")
-            async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
-                await f.write(self.watermark_text)
-            
-            font = self._get_font()
-            draw = f"drawtext=fontfile={shlex.quote(font)}:textfile={shlex.quote(str(watermark_txt))}:fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4:boxborderw=2"
-            
-            # **HIGH-QUALITY TELEGRAM-STREAMABLE SETTINGS:**
-            await self._run_ffmpeg([
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-i", str(tmp), "-filter_complex", draw,
-                # **DO NOT CHANGE THESE - THEY ARE REQUIRED FOR TELEGRAM STREAMING:**
-                "-c:v", "libx264",           # H.264 codec
-                "-pix_fmt", "yuv420p",       # ✅ CRITICAL: Telegram only streams yuv420p
-                "-profile:v", "main",        # Use 'main' profile (good quality + compatibility)
-                "-level", "4.0",             # Level 4.0 supports 1080p
-                "-preset", "medium",         # Better quality than 'fast'
-                "-crf", "20",                # High quality (18=visually lossless, 23=default)
-                "-movflags", "+faststart",   # Move metadata to start for instant playback
-                "-c:a", "aac",               # AAC audio
-                "-b:a", "192k",              # Good audio bitrate
-                str(water)
-            ])
+            # In processor.py, replace the FFmpeg watermark command:
+
+# Step 2: Watermark + **CRITICAL: Force yuv420p IN FILTER CHAIN**
+await msg.edit_text(f"🎨 Step 2/3: Watermarking...")
+async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
+    await f.write(self.watermark_text)
+
+font = self._get_font()
+
+# **THE MAGIC: format=yuv420p MUST be in the filter, not after**
+# Also scale to reasonable resolution to prevent iPad zoom
+scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2:force_original_aspect_ratio=decrease"
+pad = "pad=ceil(iw/2)*2:ceil(ih/2)*2:(ow-iw)/2:(oh-ih)/2"
+force_format = "format=yuv420p"  # ✅ THIS IS THE FIX
+watermark = f"drawtext=fontfile={shlex.quote(font)}:textfile={shlex.quote(str(watermark_txt))}:fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4:boxborderw=2"
+
+# Combine filters: scale → pad → force format → watermark
+full_filter = f"{scale},{pad},{force_format},{watermark}"
+
+await self._run_ffmpeg([
+    "ffmpeg", "-y", "-loglevel", "error",
+    "-i", str(tmp),
+    "-filter_complex", full_filter,
+    "-c:v", "libx264",
+    "-preset", "medium",
+    "-crf", "20",
+    "-movflags", "+faststart",
+    "-c:a", "aac",
+    "-b:a", "192k",
+    str(water)
+])
             
             # Step 3: Extract thumbnail from video itself
             await msg.edit_text(f"🖼️ Step 3/3: Adding thumbnail...")
