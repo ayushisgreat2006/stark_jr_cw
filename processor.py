@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
-# CRITICAL: Must import aiofiles
+# CRITICAL: Must import aiofiles and telethon
 import aiofiles
+from telethon import TelegramClient
+from telethon.sessions import StringSession
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +29,9 @@ class QueueProcessor:
         thumb_path: str,
         watermark_text: str,
         channel_link: str,
+        session_string: str,
+        api_id: int,
+        api_hash: str,
         max_concurrent: int = 1,
         max_file_size_gb: float = 2.0
     ):
@@ -35,6 +40,9 @@ class QueueProcessor:
         self.thumb_path = Path(thumb_path) if thumb_path else None
         self.watermark_text = watermark_text
         self.channel_link = channel_link
+        self.session_string = session_string
+        self.api_id = api_id
+        self.api_hash = api_hash
         self.max_concurrent = max_concurrent
         self.max_file_size_bytes = int(max_file_size_gb * 1024**3)
         
@@ -43,8 +51,8 @@ class QueueProcessor:
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self._shutdown = False
         
-        # Create thread pool for blocking operations
-        self.thread_pool = ThreadPoolExecutor(max_workers=max_concurrent * 2)
+        # Initialize Telethon client for uploads
+        self.telethon_client = None
         
         # Validate paths
         self.public_dir.mkdir(parents=True, exist_ok=True)
@@ -76,6 +84,25 @@ class QueueProcessor:
     async def start(self):
         """Start the background worker tasks."""
         logger.info(f"Starting queue processor with {self.max_concurrent} workers")
+        
+        # Initialize Telethon client
+        if self.session_string and self.api_id and self.api_hash:
+            logger.info("Initializing Telethon client...")
+            self.telethon_client = TelegramClient(
+                StringSession(self.session_string),
+                self.api_id,
+                self.api_hash,
+                sequential_updates=True
+            )
+            await self.telethon_client.connect()
+            if not await self.telethon_client.is_user_authorized():
+                logger.error("Telethon session is not authorized! Check your SESSION_STRING, API_ID, and API_HASH.")
+                self.telethon_client = None
+            else:
+                logger.info("Telethon client connected successfully!")
+        else:
+            logger.warning("No Telethon session provided. Using bot token for uploads (may fail for large files).")
+        
         asyncio.create_task(self.worker(), name="queue_worker")
         
     async def stop(self):
@@ -83,7 +110,11 @@ class QueueProcessor:
         logger.info("Shutting down queue processor...")
         self._shutdown = True
         await self.q.join()
-        self.thread_pool.shutdown(wait=True)
+        
+        if self.telethon_client:
+            await self.telethon_client.disconnect()
+            logger.info("Telethon client disconnected")
+            
         logger.info("Queue processor stopped")
         
     async def enqueue(self, meta: Dict[str, Any]):
@@ -222,7 +253,7 @@ class QueueProcessor:
             await self.run_ffmpeg(cmd1)
             await self._check_file_size(tmp)
             
-            # Step 2: Write watermark to file & apply (FIXED: aiofiles is imported)
+            # Step 2: Write watermark to file & apply
             await status_msg.edit_text(f"🎨 Step 2/3: Watermarking...")
             async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
                 await f.write(self.watermark_text)
@@ -266,7 +297,7 @@ class QueueProcessor:
                     
             await self._check_file_size(final)
             
-            # Step 4: Upload (RUN IN THREAD TO AVOID BLOCKING)
+            # Step 4: Upload using Telethon
             await status_msg.edit_text(f"📤 Uploading...")
             safe_batch = self._sanitize_filename(meta['batch'])
             safe_subject = self._sanitize_filename(meta['subject'])
@@ -282,19 +313,31 @@ class QueueProcessor:
                 f"⚡ Extracted By: {self.channel_link}"
             )
             
-            # CRITICAL FIX: Run upload in thread pool to prevent blocking
-            logger.info(f"Starting upload of {final.name} ({file_size_mb:.1f}MB)")
-            loop = asyncio.get_event_loop()
-            
-            await loop.run_in_executor(
-                self.thread_pool,
-                lambda: self._blocking_upload(
-                    chat_id=chat,
-                    file_path=final,
-                    filename=filename,
-                    caption=caption
+            if self.telethon_client:
+                # Use Telethon for upload (much more reliable for large files)
+                logger.info(f"Uploading via Telethon: {final.name} ({file_size_mb:.1f}MB)")
+                await self.telethon_client.send_file(
+                    chat,
+                    str(final),
+                    caption=caption,
+                    allow_cache=False,
+                    progress_callback=lambda current, total: logger.info(
+                        f"Upload progress: {current/1024**2:.1f}/{total/1024**2:.1f}MB"
+                    )
                 )
-            )
+            else:
+                # Fallback to bot token if Telethon not available
+                logger.warning("Telethon not available, using bot token for upload")
+                await self.app.bot.send_document(
+                    chat_id=chat,
+                    document=str(final),
+                    filename=filename,
+                    caption=caption,
+                    write_timeout=600,
+                    read_timeout=600,
+                    connect_timeout=600,
+                    pool_timeout=600,
+                )
             
             await status_msg.edit_text(f"✅ Lecture {lecture_no}/{total} completed!")
             logger.info(f"Successfully processed and uploaded lecture {lecture_no}/{total}")
@@ -305,32 +348,3 @@ class QueueProcessor:
         finally:
             # Always cleanup
             await self._cleanup_files(tmp, water, final, watermark_txt)
-            
-    def _blocking_upload(self, chat_id: int, file_path: Path, filename: str, caption: str):
-        """
-        Blocking upload wrapper to run in thread pool.
-        This prevents large uploads from blocking the async event loop.
-        """
-        try:
-            # Run the async upload method synchronously in this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Use extremely aggressive timeouts
-            return loop.run_until_complete(
-                self.app.bot.send_document(
-                    chat_id=chat_id,
-                    document=str(file_path),
-                    filename=filename,
-                    caption=caption,
-                    write_timeout=600,  # 10 minutes for upload
-                    read_timeout=600,
-                    connect_timeout=600,
-                    pool_timeout=600,
-                )
-            )
-        except Exception as e:
-            logger.error(f"Upload failed: {e}")
-            raise
-        finally:
-            loop.close()
