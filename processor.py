@@ -26,8 +26,8 @@ class QueueProcessor:
         session_string: str,
         api_id: int,
         api_hash: str,
-        max_concurrent: int = 1,      # ADD THIS
-        max_file_size_gb: float = 1.5, # ADD THIS
+        max_concurrent: int = 1,
+        max_file_size_gb: float = 1.5,
     ):
         self.app = bot_application
         self.public_dir = Path(public_dir)
@@ -42,11 +42,6 @@ class QueueProcessor:
         
         self.q = asyncio.Queue()
         self.telethon_client = None
-        
-        # Validate paths
-        self.public_dir.mkdir(parents=True, exist_ok=True)
-        
-        logger.info(f"Initialized with max_concurrent={max_concurrent}, max_file_size={max_file_size_gb}GB")
                 
     async def start(self):
         """Start the background worker."""
@@ -54,7 +49,7 @@ class QueueProcessor:
         
         # Initialize Telethon
         has_creds = bool(self.session_string and self.api_id and self.api_hash)
-        logger.info(f"Telethon credentials: {has_creds}")
+        logger.info(f"Telethon credentials present: {has_creds}")
         
         if has_creds:
             try:
@@ -135,6 +130,7 @@ class QueueProcessor:
         base = self.public_dir / f"lec_{no}_{uuid.uuid4().hex[:6]}"
         tmp, water, final = base.with_suffix(".tmp.mp4"), base.with_suffix(".water.mp4"), base.with_suffix(".mp4")
         watermark_txt = base.with_suffix(".txt")
+        thumbnail_jpg = base.with_suffix(".thumb.jpg")
         
         try:
             # Step 1: Download
@@ -144,40 +140,56 @@ class QueueProcessor:
                 "-i", meta["m3u8"], "-c", "copy", "-bsf:a", "aac_adtstoasc", str(tmp)
             ])
             
-            # Step 2: Watermark
+            # Step 2: Watermark + **Telegram-optimized encoding**
             await msg.edit_text(f"🎨 Step 2/3: Watermarking...")
             async with aiofiles.open(watermark_txt, "w", encoding="utf-8") as f:
                 await f.write(self.watermark_text)
             
             font = self._get_font()
             draw = f"drawtext=fontfile={shlex.quote(font)}:textfile={shlex.quote(str(watermark_txt))}:fontsize=22:fontcolor=white@0.9:x=20:y=20:box=1:boxcolor=black@0.4:boxborderw=2"
+            
+            # **CRITICAL: Force Telegram-compatible codec settings**
             await self._run_ffmpeg([
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", str(tmp), "-filter_complex", draw,
-                "-preset", "ultrafast", "-crf", "28", "-movflags", "+faststart", str(water)
+                # **TELEGRAM-OPTIMIZED SETTINGS:**
+                "-c:v", "libx264",          # H.264 codec (most compatible)
+                "-profile:v", "baseline",    # Baseline profile for max compatibility
+                "-level", "3.0",             # Level 3.0 for broad device support
+                "-pix_fmt", "yuv420p",       # yuv420p pixel format (required for Telegram streaming)
+                "-preset", "fast",           # Balance speed and quality
+                "-crf", "23",                # Good quality (lower = better, larger file)
+                "-movflags", "+faststart",   # Move moov atom to start for streaming
+                "-c:a", "aac",               # AAC audio
+                "-b:a", "128k",              # 128kbps audio
+                str(water)
             ])
             
-            # Step 3: Thumbnail
-            if self.thumb_path and self.thumb_path.exists():
-                await msg.edit_text(f"🖼️ Step 3/3: Adding thumbnail...")
-                await self._run_ffmpeg([
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-i", str(water), "-i", str(self.thumb_path),
-                    "-map", "0", "-map", "1", "-c", "copy",
-                    "-disposition:v:1", "attached_pic", str(final)
-                ])
-            else:
-                water.rename(final)
+            # Step 3: **Generate video thumbnail** (not just attach random image)
+            await msg.edit_text(f"🖼️ Step 3/3: Adding thumbnail...")
+            
+            # Extract thumbnail from video at 5-second mark
+            await self._run_ffmpeg([
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", str(water),
+                "-ss", "5",  # Take frame at 5 seconds
+                "-vframes", "1",
+                "-vf", "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2",
+                str(thumbnail_jpg)
+            ])
+            
+            # Attach the extracted thumbnail to video
+            await self._run_ffmpeg([
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", str(water), "-i", str(thumbnail_jpg),
+                "-map", "0", "-map", "1",
+                "-c", "copy",
+                "-disposition:v:1", "attached_pic",
+                str(final)
+            ])
                 
             # Step 4: Upload via Telethon
             await msg.edit_text(f"📤 Uploading...")
-            
-            # DIAGNOSTIC: Log Telethon status
-            logger.info(f"DEBUG: telethon_client = {self.telethon_client}")
-            logger.info(f"DEBUG: session_string length = {len(self.session_string)}")
-            logger.info(f"DEBUG: api_id = {self.api_id}")
-            logger.info(f"DEBUG: api_hash present = {bool(self.api_hash)}")
-            
             caption = (
                 f"🔥 Stark JR. Batch Engine\n"
                 f"🎯 Batch: {meta['batch']}\n"
@@ -195,17 +207,12 @@ class QueueProcessor:
                     allow_cache=False
                 )
             else:
-                # This should NEVER happen if credentials are correct
-                logger.error("❌ CRITICAL: telethon_client is None at upload time!")
-                logger.error(f"Session string length: {len(self.session_string)}")
-                logger.error(f"API_ID: {self.api_id}")
-                logger.error(f"API_HASH present: {bool(self.api_hash)}")
-                raise Exception("Telethon client is None. Check initialization logs above.")
+                raise Exception("Telethon client not available. Cannot upload.")
             
             await msg.edit_text(f"✅ L{no}/{total} completed!")
             
         finally:
             # Cleanup
-            for p in [tmp, water, final, watermark_txt]:
+            for p in [tmp, water, final, watermark_txt, thumbnail_jpg]:
                 if p.exists():
                     p.unlink()
